@@ -1,21 +1,3 @@
-tab1, tab2 = st.tabs(["Simulator", "Learn"])
-
-with tab2:
-    st.header("📘 Learn the Basics")
-    st.write("Use this section to understand key option concepts.")
-
-    st.subheader("Call Option")
-    st.write("Right to buy; benefits from price going up.")
-
-    st.subheader("Put Option")
-    st.write("Right to sell; benefits from price going down.")
-
-    st.subheader("Strike Price")
-    st.write("The contract price.")
-
-    st.subheader("Premium")
-    st.write("The cost of the option.")
-    
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -37,6 +19,17 @@ MOVES = [-0.20, -0.10, 0.0, 0.10, 0.20]
 st.title("📈 Options Bidding Simulator")
 st.write("**Created by Stephen J. Bowen**")
 st.write("Play multiple rounds, bid on options, and compare your bid to the real market premium.")
+
+# ---------------------------------------------------------
+# Tabs
+# ---------------------------------------------------------
+tab1, tab2 = st.tabs(["Simulator", "Learn"])
+
+with tab1:
+    # ---------------------------------------------------------
+    # Step 1 — Choose stock
+    # ---------------------------------------------------------
+    ticker = st.text_input("Enter a stock ticker (e.g., AAPL):", "AAPL").upper()
 
 # ---------------------------------------------------------
 # Step 1 — Choose stock
@@ -274,3 +267,18 @@ if "strike" in st.session_state:
 
             st.session_state["premium_input"] = 0.0
             st.experimental_rerun()
+
+with tab2:
+    st.header("📘 Key Concepts & Definitions")
+
+    st.subheader("Call Option")
+    st.write("Right to buy; benefits from price going up.")
+
+    st.subheader("Put Option")
+    st.write("Right to sell; benefits from price going down.")
+
+    st.subheader("Strike Price")
+    st.write("The contract price.")
+
+    st.subheader("Premium")
+    st.write("The cost of the option.")
