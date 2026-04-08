@@ -1,3 +1,21 @@
+tab1, tab2 = st.tabs(["Simulator", "Learn"])
+
+with tab2:
+    st.header("📘 Learn the Basics")
+    st.write("Use this section to understand key option concepts.")
+
+    st.subheader("Call Option")
+    st.write("Right to buy; benefits from price going up.")
+
+    st.subheader("Put Option")
+    st.write("Right to sell; benefits from price going down.")
+
+    st.subheader("Strike Price")
+    st.write("The contract price.")
+
+    st.subheader("Premium")
+    st.write("The cost of the option.")
+    
 import streamlit as st
 import yfinance as yf
 import pandas as pd
