@@ -1,60 +1,57 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
 import datetime as dt
 import random
 
-# -----------------------------
-# Constants and configuration
-# -----------------------------
+# =========================
+# CONSTANTS
+# =========================
 
 START_DATE = dt.date(2025, 1, 1)
 END_DATE = dt.date(2025, 12, 31)
 
+BASE_DEMAND = 300
+
+MACHINE_COST = 2000
+MACHINE_SELLBACK = 500
+MACHINE_DAILY_OP_COST = 150
+
+# Event dates
+CELEB_START = dt.date(2025, 3, 15)
+CELEB_END = dt.date(2025, 4, 30)
+CRISIS_DATE = dt.date(2025, 9, 1)
+AUTOPILOT_DATE = dt.date(2025, 10, 15)
+RECOVERY_START = dt.date(2025, 11, 1)
+
+# New viral system dates
 MARKETING_START_DATE = dt.date(2025, 2, 1)
 VIRAL_WINDOW_START = dt.date(2025, 5, 1)
 VIRAL_WINDOW_END = dt.date(2025, 6, 15)
 
-BASE_DEMAND = 120  # baseline daily demand units
-BASE_PRICE = 100.0
+# Marketing daily cost per tier (1–6)
+MARKETING_DAILY_COST = {
+    1: 0,
+    2: 500,
+    3: 1000,
+    4: 3000,
+    5: 7000,
+    6: 12000,
+}
 
-MACHINE_COST = 25000
-MACHINE_DAILY_CAPACITY = 80
-MACHINE_DAILY_FIXED_COST = 400
+# Generic silhouette placeholder (option C)
+SILHOUETTE_GENERIC = ""
 
-KIT_COST = 20
-VARIABLE_COST_PER_UNIT = 30
+# =========================
+# IMAGE HELPER
+# =========================
 
-MAX_DAYS = (END_DATE - START_DATE).days + 1
+def img_tag(b64, size):
+    if not b64:
+        return ""
+    return f"<img src='data:image/png;base64,{b64}' width='{size}' />"
 
-# Marketing tiers: (tier, daily_cost, demand_boost_pct)
-MARKETING_TIERS = [
-    (1, 0, 0.00),
-    (2, 500, 0.05),
-    (3, 1000, 0.10),
-    (4, 3000, 0.25),
-    (5, 7000, 0.35),
-    (6, 12000, 0.45),
-    (7, 20000, 0.55),
-]
-
-# -----------------------------
-# Utility functions
-# -----------------------------
-
-def get_marketing_tier_info(tier: int):
-    for t, cost, boost in MARKETING_TIERS:
-        if t == tier:
-            return cost, boost
-    return 0, 0.0
-
-
-def date_range(start: dt.date, end: dt.date):
-    current = start
-    while current <= end:
-        yield current
-        current += dt.timedelta(days=1)
-
+# =========================
+# SESSION STATE INIT
+# =========================
 
 def init_state():
     if "initialized" in st.session_state:
@@ -63,380 +60,506 @@ def init_state():
     st.session_state.initialized = True
 
     st.session_state.current_date = START_DATE
-    st.session_state.day_index = 0
+    st.session_state.day_counter = 0
 
-    st.session_state.cash = 500000.0
-    st.session_state.machines = 3
+    st.session_state.cash = 50000.0
+    st.session_state.cumulative_profit = 0.0
+
+    st.session_state.kits_on_hand = 500
     st.session_state.backlog = 0
-    st.session_state.kits_on_hand = 0
 
-    st.session_state.price = BASE_PRICE
+    st.session_state.machines = {
+        "Paint Bottle": 3,
+        "Paint Lid": 3,
+        "Assemble": 3,
+    }
+    st.session_state.desired_machines = {
+        "Paint Bottle": 3,
+        "Paint Lid": 3,
+        "Assemble": 3,
+    }
+
+    st.session_state.yesterday_demand = 0
+    st.session_state.yesterday_sold = 0
+    st.session_state.yesterday_profit = 0.0
+
+    st.session_state.recent_events = []
+
+    st.session_state.celeb_triggered = False
+    st.session_state.viral_triggered = False
+    st.session_state.crisis_triggered = False
+    st.session_state.autopilot = False
+
+    st.session_state.show_celeb_popup = False
+    st.session_state.show_viral_popup = False
+    st.session_state.show_crisis_popup = False
+    st.session_state.show_oversaturation_popup = False
+
+    st.session_state.crisis_theme = None
+
+    st.session_state.price = 25.0
     st.session_state.marketing_tier = 1
 
-    st.session_state.daily_history = []
-
     st.session_state.autoplay = False
-    st.session_state.autoplay_speed = 1
 
-    st.session_state.viral_triggered = False
-    st.session_state.viral_threshold = random.randint(150000, 350000)
+    # New viral/oversaturation/cash-burn state
     st.session_state.cumulative_marketing_spend = 0.0
-
+    st.session_state.viral_threshold = random.randint(150000, 350000)
     st.session_state.marketing_effectiveness_multiplier = 1.0
     st.session_state.oversaturation_triggered = False
     st.session_state.missed_viral_penalty_applied = False
-
+    st.session_state.trending_warning_shown = False
     st.session_state.cash_burn_counter = 0
 
-    st.session_state.trending_warning_shown = False
-    st.session_state.missed_viral_checked = False
+# =========================
+# DEMAND MODEL
+# =========================
 
-    st.session_state.events = []
+def marketing_multiplier(date):
+    tier = st.session_state.marketing_tier
+    base = {
+        1: 1.0,
+        2: 1.1,
+        3: 1.25,
+        4: 1.35,
+        5: 1.45,
+        6: 1.55,
+    }[tier]
 
-    st.session_state.show_viral_popup = False
-    st.session_state.show_crisis_popup = False
-    st.session_state.show_autopilot_popup = False
-    st.session_state.show_oversaturation_popup = False
+    if date >= MARKETING_START_DATE:
+        base *= st.session_state.marketing_effectiveness_multiplier
 
-    st.session_state.crisis_triggered = False
-    st.session_state.crisis_start_date = dt.date(2025, 7, 1)
-    st.session_state.crisis_end_date = dt.date(2025, 7, 31)
+    if st.session_state.viral_triggered:
+        base *= 4.0
 
-    st.session_state.celebrity_event_date = dt.date(2025, 4, 10)
-    st.session_state.celebrity_triggered = False
+    if st.session_state.oversaturation_triggered:
+        base *= 0.8
 
-    st.session_state.autopilot_active = False
+    if st.session_state.missed_viral_penalty_applied:
+        base *= 0.8
 
-    st.session_state.viral_multiplier = 1.0
-    st.session_state.celebrity_multiplier = 1.0
-    st.session_state.crisis_multiplier = 1.0
+    if date >= RECOVERY_START:
+        base *= 2.0
 
-    st.session_state.oversaturation_multiplier = 1.0
+    return base
 
-    st.session_state.last_revenue = 0.0
-    st.session_state.last_marketing_cost = 0.0
+def price_multiplier(price):
+    if price <= 20:
+        return 1.3
+    if price <= 25:
+        return 1.0
+    if price <= 30:
+        return 0.8
+    return 0.6
 
+def seasonal_multiplier(date):
+    if date.month in [6, 7, 8]:
+        return 1.2
+    if date.month in [12, 1, 2]:
+        return 0.9
+    return 1.0
 
-def record_event(message: str, level: str = "info"):
-    st.session_state.events.insert(0, {"message": message, "level": level, "date": st.session_state.current_date})
+def event_multiplier(date):
+    m = 1.0
+    if CELEB_START <= date <= CELEB_END:
+        m *= 1.3
+    if date >= CRISIS_DATE:
+        m *= 0.3
+    return m
 
-
-def compute_demand_for_day(current_date: dt.date) -> int:
+def compute_daily_demand(date):
     base = BASE_DEMAND
+    mkt = marketing_multiplier(date)
+    pm = price_multiplier(st.session_state.price)
+    seas = seasonal_multiplier(date)
+    evt = event_multiplier(date)
+    d = base * mkt * pm * seas * evt
+    d *= random.uniform(0.9, 1.1)
+    return max(0, int(d))
 
-    price_factor = max(0.1, 1.0 - (st.session_state.price - BASE_PRICE) / 200.0)
+# =========================
+# EVENTS
+# =========================
 
-    marketing_cost, marketing_boost = get_marketing_tier_info(st.session_state.marketing_tier)
+CELEB_QUOTES = [
+    ("generic", "I drink three Owata bottles before breakfast.", "Definitely Not The Rock"),
+    ("generic", "This bottle changed my life. My therapist is furious.", "Oprah-ish"),
+    ("generic", "Owata? I thought it was a new crypto coin.", "Elon-adjacent"),
+    ("generic", "Best bottle I’ve ever yee’d or haw’d.", "Country Singer Vibes"),
+]
 
-    marketing_effect = 1.0
-    if current_date >= MARKETING_START_DATE:
-        marketing_effect += marketing_boost
+CRISIS_THEMES = [
+    ("political", "angry", "Owata bottles are now a symbol of the wrong side of the debate.", "Anonymous Commentator"),
+    ("environmental", "angry", "Owata bottles are destroying the oceans!", "Concerned Influencer"),
+    ("celebrity", "angry", "I can’t believe I bought the bottle that he uses.", "Disappointed Fan"),
+    ("conspiracy", "angry", "I heard Owata bottles are made from recycled missile parts.", "Guy On The Internet"),
+]
 
-    marketing_effect *= st.session_state.marketing_effectiveness_multiplier
-    marketing_effect *= st.session_state.oversaturation_multiplier
+def add_event(msg):
+    st.session_state.recent_events.insert(0, f"{st.session_state.current_date}: {msg}")
+    st.session_state.recent_events = st.session_state.recent_events[:5]
 
-    viral_effect = st.session_state.viral_multiplier
-    celebrity_effect = st.session_state.celebrity_multiplier
-    crisis_effect = st.session_state.crisis_multiplier
+def check_events():
+    d = st.session_state.current_date
 
-    noise = np.random.normal(1.0, 0.05)
+    if d >= CELEB_START and not st.session_state.celeb_triggered:
+        st.session_state.celeb_triggered = True
+        st.session_state.show_celeb_popup = True
+        add_event("Celebrity endorsement begins (+30% demand).")
 
-    demand = base * price_factor * marketing_effect * viral_effect * celebrity_effect * crisis_effect * noise
-    return max(0, int(round(demand)))
-
-
-def apply_special_events(current_date: dt.date):
-    if (not st.session_state.celebrity_triggered) and current_date == st.session_state.celebrity_event_date:
-        st.session_state.celebrity_triggered = True
-        st.session_state.celebrity_multiplier = 1.4
-        record_event("Celebrity endorsement! Demand surges.", "success")
-
-    if st.session_state.celebrity_triggered and current_date > st.session_state.celebrity_event_date + dt.timedelta(days=14):
-        st.session_state.celebrity_multiplier = 1.0
-
-    if (not st.session_state.crisis_triggered) and current_date == st.session_state.crisis_start_date:
+    if d >= CRISIS_DATE and not st.session_state.crisis_triggered:
         st.session_state.crisis_triggered = True
-        st.session_state.crisis_multiplier = 0.5
-        record_event("Supply chain crisis hits! Demand and capacity are disrupted.", "error")
         st.session_state.show_crisis_popup = True
+        st.session_state.crisis_theme = random.choice(CRISIS_THEMES)
+        add_event("Crisis hits: demand collapses to 30%.")
 
-    if st.session_state.crisis_triggered and current_date > st.session_state.crisis_end_date:
-        st.session_state.crisis_multiplier = 1.0
+    if d >= AUTOPILOT_DATE and not st.session_state.autopilot:
+        st.session_state.autopilot = True
+        add_event("Autopilot engaged: decisions locked.")
 
+# =========================
+# POPUPS
+# =========================
 
-def check_viral_and_marketing_effects(current_date: dt.date, marketing_cost_today: float, revenue_today: float):
-    if current_date >= MARKETING_START_DATE:
+def popup_celeb():
+    if not st.session_state.show_celeb_popup:
+        return
+    with st.modal("Celebrity Endorsement"):
+        kind, quote, who = random.choice(CELEB_QUOTES)
+        img = SILHOUETTE_GENERIC
+        st.markdown(f"<div style='text-align:center;'>{img_tag(img,256)}</div>", unsafe_allow_html=True)
+        st.write(f"“{quote}” — *{who}*")
+        st.write("Demand +30% until April 30.")
+        if st.button("Continue"):
+            st.session_state.show_celeb_popup = False
+            st.experimental_rerun()
+
+def popup_viral():
+    if not st.session_state.show_viral_popup:
+        return
+    with st.modal("Owata Has Gone Viral!"):
+        cols = st.columns(3)
+        for i in range(3):
+            cols[i].markdown(
+                f"<div style='text-align:center;'>{img_tag(SILHOUETTE_GENERIC,128)}</div>",
+                unsafe_allow_html=True,
+            )
+        st.write("Demand now ~1200/day baseline.")
+        if st.button("Continue"):
+            st.session_state.show_viral_popup = False
+            st.experimental_rerun()
+
+def popup_crisis():
+    if not st.session_state.show_crisis_popup:
+        return
+    with st.modal("Crisis Event"):
+        theme, img_key, quote, who = st.session_state.crisis_theme
+        st.markdown(
+            f"<div style='text-align:center;'>{img_tag(SILHOUETTE_GENERIC,256)}</div>",
+            unsafe_allow_html=True,
+        )
+        st.write(f"“{quote}” — *{who}*")
+        st.write("Demand has collapsed to 30%. Consider selling machines for $500 each.")
+        if st.button("Continue"):
+            st.session_state.show_crisis_popup = False
+            st.experimental_rerun()
+
+def popup_oversaturation():
+    if not st.session_state.show_oversaturation_popup:
+        return
+    with st.modal("Oversaturation Warning"):
+        cols = st.columns(3)
+        sizes = [220, 180, 200]
+        for i in range(3):
+            cols[i].markdown(
+                f"<div style='text-align:center;'>{img_tag(SILHOUETTE_GENERIC,sizes[i])}</div>",
+                unsafe_allow_html=True,
+            )
+        st.write("Our marketing is oversaturated. Consumers are tuning us out.")
+        st.write("CFO: We recommend reducing marketing spend immediately.")
+        if st.button("Continue", key="oversat_continue"):
+            st.session_state.show_oversaturation_popup = False
+            st.experimental_rerun()
+
+# =========================
+# SIMULATION
+# =========================
+
+def daily_capacity():
+    return sum(st.session_state.machines.values()) * 150
+
+def update_marketing_and_viral(d, revenue, marketing_cost_today):
+    if d >= MARKETING_START_DATE:
         st.session_state.cumulative_marketing_spend += marketing_cost_today
 
-    st.session_state.last_marketing_cost = marketing_cost_today
-    st.session_state.last_revenue = revenue_today
-
-    if marketing_cost_today > revenue_today:
+    if marketing_cost_today > revenue:
         st.session_state.cash_burn_counter += 1
     else:
         st.session_state.cash_burn_counter = 0
 
     if st.session_state.cash_burn_counter >= 5:
-        record_event("CFO: We’re burning cash faster than we’re earning it. Recommend scaling back marketing.", "warning")
+        add_event("CFO: We’re burning cash faster than we’re earning it. Recommend scaling back marketing.")
         st.session_state.cash_burn_counter = 0
 
     if (not st.session_state.viral_triggered
-        and current_date >= VIRAL_WINDOW_START
-        and current_date <= VIRAL_WINDOW_END
+        and d >= VIRAL_WINDOW_START
+        and d <= VIRAL_WINDOW_END
         and st.session_state.cumulative_marketing_spend >= st.session_state.viral_threshold):
         st.session_state.viral_triggered = True
-        st.session_state.viral_multiplier = 1.8
         st.session_state.show_viral_popup = True
-        record_event("Owata goes viral! Demand explodes.", "success")
+        add_event("Owata has gone viral!")
 
     if (not st.session_state.trending_warning_shown
         and not st.session_state.viral_triggered
-        and current_date >= VIRAL_WINDOW_START
+        and d >= VIRAL_WINDOW_START
         and st.session_state.cumulative_marketing_spend >= 0.9 * st.session_state.viral_threshold):
         st.session_state.trending_warning_shown = True
-        record_event("Your marketing team reports Owata is trending. A viral moment may be imminent.", "info")
+        add_event("Your marketing team reports Owata is trending. A viral moment may be imminent.")
 
     if (not st.session_state.missed_viral_penalty_applied
-        and current_date > VIRAL_WINDOW_END
+        and d > VIRAL_WINDOW_END
         and not st.session_state.viral_triggered):
         st.session_state.missed_viral_penalty_applied = True
         st.session_state.marketing_effectiveness_multiplier *= 0.8
-        record_event("Owata failed to catch the wave. Marketing effectiveness drops for the rest of the year.", "warning")
+        add_event("Owata failed to catch the wave. Marketing effectiveness drops for the rest of the year.")
 
     if (not st.session_state.oversaturation_triggered
         and st.session_state.cumulative_marketing_spend > 2 * st.session_state.viral_threshold):
         st.session_state.oversaturation_triggered = True
-        st.session_state.oversaturation_multiplier *= 0.8
         st.session_state.show_oversaturation_popup = True
-        record_event("Our marketing is oversaturated. Consumers are tuning us out.", "warning")
-
+        add_event("Our marketing is oversaturated. Consumers are tuning us out.")
 
 def simulate_one_day():
-    current_date = st.session_state.current_date
+    d = st.session_state.current_date
+    demand = compute_daily_demand(d)
+    cap = daily_capacity()
 
-    apply_special_events(current_date)
+    sold_from_backlog = min(st.session_state.backlog, cap)
+    st.session_state.backlog -= sold_from_backlog
+    cap -= sold_from_backlog
 
-    marketing_cost, _ = get_marketing_tier_info(st.session_state.marketing_tier)
-    if current_date < MARKETING_START_DATE:
-        marketing_cost_today = 0.0
+    sold_today = min(demand, cap)
+    lost = demand - sold_today
+    st.session_state.backlog += lost
+
+    kits_needed = sold_today
+    if kits_needed > st.session_state.kits_on_hand:
+        sold_today = st.session_state.kits_on_hand
+        st.session_state.backlog += (kits_needed - sold_today)
+        st.session_state.kits_on_hand = 0
+        add_event("Stockout of kits.")
     else:
-        marketing_cost_today = float(marketing_cost)
+        st.session_state.kits_on_hand -= kits_needed
 
-    capacity = st.session_state.machines * MACHINE_DAILY_CAPACITY
-    if st.session_state.crisis_multiplier < 1.0:
-        capacity = int(capacity * 0.7)
+    revenue = sold_today * st.session_state.price
 
-    demand_today = compute_demand_for_day(current_date)
-    total_demand = demand_today + st.session_state.backlog
+    op_cost = sum(st.session_state.machines.values()) * MACHINE_DAILY_OP_COST
+    kit_cost = sold_today * 5.0
 
-    units_produced = min(capacity, total_demand, st.session_state.kits_on_hand)
-    st.session_state.kits_on_hand -= units_produced
+    marketing_cost_today = 0.0
+    if d >= MARKETING_START_DATE:
+        marketing_cost_today = MARKETING_DAILY_COST.get(st.session_state.marketing_tier, 0)
 
-    units_sold = min(units_produced, total_demand)
-    st.session_state.backlog = max(0, total_demand - units_sold)
+    profit = revenue - op_cost - kit_cost - marketing_cost_today
 
-    revenue_today = units_sold * st.session_state.price
+    st.session_state.cash += profit
+    st.session_state.cumulative_profit += profit
 
-    machine_fixed_costs = st.session_state.machines * MACHINE_DAILY_FIXED_COST
-    variable_costs = units_produced * VARIABLE_COST_PER_UNIT
+    st.session_state.yesterday_demand = demand
+    st.session_state.yesterday_sold = sold_today
+    st.session_state.yesterday_profit = profit
 
-    total_costs = machine_fixed_costs + variable_costs + marketing_cost_today
-    profit_today = revenue_today - total_costs
+    update_marketing_and_viral(d, revenue, marketing_cost_today)
 
-    st.session_state.cash += profit_today
+    st.session_state.day_counter += 1
+    st.session_state.current_date = d + dt.timedelta(days=1)
 
-    st.session_state.daily_history.append({
-        "date": current_date,
-        "demand": demand_today,
-        "total_demand": total_demand,
-        "units_produced": units_produced,
-        "units_sold": units_sold,
-        "backlog": st.session_state.backlog,
-        "revenue": revenue_today,
-        "marketing_cost": marketing_cost_today,
-        "machine_fixed_costs": machine_fixed_costs,
-        "variable_costs": variable_costs,
-        "profit": profit_today,
-        "cash": st.session_state.cash,
-        "price": st.session_state.price,
-        "marketing_tier": st.session_state.marketing_tier,
-        "machines": st.session_state.machines,
-        "kits_on_hand": st.session_state.kits_on_hand,
-    })
+    check_events()
 
-    check_viral_and_marketing_effects(current_date, marketing_cost_today, revenue_today)
+# =========================
+# MACHINE BUY/SELL
+# =========================
 
-    st.session_state.day_index += 1
-    st.session_state.current_date = current_date + dt.timedelta(days=1)
+def sell_machine(station):
+    cur = st.session_state.machines[station]
+    if cur > 0:
+        st.session_state.machines[station] -= 1
+        st.session_state.cash += MACHINE_SELLBACK
+        add_event(f"Sold 1 {station} machine for ${MACHINE_SELLBACK}.")
+    else:
+        add_event(f"No {station} machines left to sell.")
 
-
-def reset_game():
-    keys = list(st.session_state.keys())
-    for k in keys:
-        del st.session_state[k]
-    init_state()
-
-
-def render_popups():
-    if st.session_state.show_crisis_popup:
-        with st.modal("Supply Chain Crisis"):
-            st.write("A major supply chain crisis has hit. Capacity and demand are disrupted for several weeks.")
-            if st.button("Continue", key="crisis_continue"):
-                st.session_state.show_crisis_popup = False
-
-    if st.session_state.show_viral_popup:
-        with st.modal("Owata Goes Viral!"):
-            st.write("Owata has gone viral! Demand surges as social media explodes with attention.")
-            if st.button("Ride the Wave", key="viral_continue"):
-                st.session_state.show_viral_popup = False
-
-    if st.session_state.show_autopilot_popup:
-        with st.modal("Autopilot Active"):
-            st.write("Autopilot is active. Machine decisions are locked.")
-            if st.button("Got it", key="autopilot_continue"):
-                st.session_state.show_autopilot_popup = False
-
-    if st.session_state.show_oversaturation_popup:
-        with st.modal("Oversaturation Warning"):
-            st.write("Our marketing is oversaturated. Consumers are tuning us out.")
-            st.write("CFO: We recommend reducing marketing spend immediately.")
-            if st.button("Understood", key="oversaturation_continue"):
-                st.session_state.show_oversaturation_popup = False
-
-
-def render_controls():
-    st.sidebar.header("Decisions")
-
-    st.sidebar.markdown("**Price**")
-    st.session_state.price = st.sidebar.slider(
-        "Set daily price",
-        min_value=60.0,
-        max_value=160.0,
-        value=st.session_state.price,
-        step=5.0,
-    )
-
-    st.sidebar.markdown("**Marketing (effects begin February 1)**")
-    tier_labels = [f"Tier {t} (${cost}/day, +{int(boost*100)}%)" for t, cost, boost in MARKETING_TIERS]
-    tier_values = [t for t, _, _ in MARKETING_TIERS]
-    current_index = tier_values.index(st.session_state.marketing_tier)
-    selected_index = st.sidebar.selectbox(
-        "Marketing intensity",
-        options=list(range(len(tier_values))),
-        format_func=lambda i: tier_labels[i],
-        index=current_index,
-    )
-    st.session_state.marketing_tier = tier_values[selected_index]
-
-    st.sidebar.markdown("**Capacity**")
-    if st.sidebar.button("Buy 1 Machine (-$25,000)"):
-        if st.session_state.cash >= MACHINE_COST:
-            st.session_state.cash -= MACHINE_COST
-            st.session_state.machines += 1
-            record_event("Purchased 1 additional machine.", "info")
-        else:
-            record_event("Not enough cash to buy a machine.", "error")
-
-    st.sidebar.markdown("**Kits**")
-    kits_to_buy = st.sidebar.number_input("Kits to buy today", min_value=0, max_value=2000, value=0, step=50)
-    if st.sidebar.button("Purchase Kits"):
-        total_kit_cost = kits_to_buy * KIT_COST
-        if st.session_state.cash >= total_kit_cost:
-            st.session_state.cash -= total_kit_cost
-            st.session_state.kits_on_hand += kits_to_buy
-            record_event(f"Purchased {kits_to_buy} kits.", "info")
-        else:
-            record_event("Not enough cash to buy kits.", "error")
-
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("**Autoplay**")
-    st.session_state.autoplay = st.sidebar.checkbox("Run automatically", value=st.session_state.autoplay)
-    st.session_state.autoplay_speed = st.sidebar.slider(
-        "Days per click (when autoplay is on)",
-        min_value=1,
-        max_value=10,
-        value=st.session_state.autoplay_speed,
-    )
-
-    if st.sidebar.button("Reset Simulation"):
-        reset_game()
-        st.experimental_rerun()
-
-
-def render_header():
-    st.title("Owata Operations Simulator")
-
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Date", st.session_state.current_date.isoformat())
-    col2.metric("Cash", f"${st.session_state.cash:,.0f}")
-    col3.metric("Machines", st.session_state.machines)
-    col4.metric("Backlog", st.session_state.backlog)
-
-    st.markdown(
-        "> Marketing effects begin **February 1**. Some long‑term effects of marketing are not explicitly disclosed."
-    )
-
-
-def render_events_panel():
-    st.subheader("Recent Events")
-    if not st.session_state.events:
-        st.write("No major events yet.")
+def apply_machine_changes():
+    if st.session_state.autopilot:
         return
+    cur = st.session_state.machines
+    des = st.session_state.desired_machines
 
-    for event in st.session_state.events[:6]:
-        if event["level"] == "error":
-            st.error(f"{event['date']}: {event['message']}")
-        elif event["level"] == "warning":
-            st.warning(f"{event['date']}: {event['message']}")
-        elif event["level"] == "success":
-            st.success(f"{event['date']}: {event['message']}")
-        else:
-            st.info(f"{event['date']}: {event['message']}")
+    for station in cur.keys():
+        c = cur[station]
+        d = des[station]
+        if d > c:
+            delta = d - c
+            cost = delta * MACHINE_COST
+            if st.session_state.cash >= cost:
+                st.session_state.cash -= cost
+                cur[station] = d
+                add_event(f"Bought {delta} {station} machine(s).")
+            else:
+                add_event(f"Not enough cash to buy {delta} {station} machine(s).")
+                des[station] = c
+        elif d < c:
+            delta = c - d
+            proceeds = delta * MACHINE_SELLBACK
+            st.session_state.cash += proceeds
+            cur[station] = d
+            add_event(f"Sold {delta} {station} machine(s) for ${proceeds}.")
 
-
-def render_history():
-    if not st.session_state.daily_history:
-        return
-
-    df = pd.DataFrame(st.session_state.daily_history)
-    df_display = df[["date", "demand", "units_sold", "backlog", "revenue", "profit", "cash", "price", "marketing_tier"]]
-    st.subheader("Daily Performance")
-    st.dataframe(df_display.tail(30), use_container_width=True)
-
-    st.subheader("Key Trends")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.line_chart(df.set_index("date")[["revenue", "profit"]])
-    with col2:
-        st.line_chart(df.set_index("date")[["demand", "units_sold", "backlog"]])
-
+# =========================
+# UI
+# =========================
 
 def main():
     init_state()
 
-    render_popups()
-    render_header()
-    render_controls()
+    st.title("Owata Steel Water Bottle Simulator")
+    st.markdown(
+        "<div style='font-size:14px; color:#555;'>Created by <b>Stephen J. Bowen, KFBS EMBA ’27</b></div>",
+        unsafe_allow_html=True,
+    )
 
-    col_left, col_right = st.columns([2, 1])
+    check_events()
 
-    with col_left:
-        if st.button("Advance 1 Day"):
-            if st.session_state.current_date <= END_DATE:
-                simulate_one_day()
-        if st.session_state.autoplay:
-            for _ in range(st.session_state.autoplay_speed):
-                if st.session_state.current_date <= END_DATE:
+    if st.session_state.show_celeb_popup:
+        popup_celeb()
+        return
+    if st.session_state.show_viral_popup:
+        popup_viral()
+        return
+    if st.session_state.show_crisis_popup:
+        popup_crisis()
+        return
+    if st.session_state.show_oversaturation_popup:
+        popup_oversaturation()
+        return
+
+    tab_main, tab_analytics = st.tabs(["Dashboard", "Analytics"])
+
+    with tab_main:
+        left, right = st.columns([2, 1])
+
+        with left:
+            st.subheader(f"Date: {st.session_state.current_date}")
+
+            st.markdown("### Key Metrics (Yesterday)")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Demand", st.session_state.yesterday_demand)
+            c2.metric("Units Sold", st.session_state.yesterday_sold)
+            c3.metric("Profit", f"${st.session_state.yesterday_profit:,.0f}")
+
+            c4, c5, c6 = st.columns(3)
+            c4.metric("Kits on Hand", st.session_state.kits_on_hand)
+            c5.metric("Backlog", st.session_state.backlog)
+            c6.metric("Cumulative Profit", f"${st.session_state.cumulative_profit:,.0f}")
+
+            st.markdown("### Machines")
+            cols = st.columns(3)
+            for col, station in zip(cols, st.session_state.machines.keys()):
+                with col:
+                    st.write(f"**{station}**")
+                    st.write(f"Active: {st.session_state.machines[station]}")
+
+                    if st.button(f"Sell 1 {station}", key=f"sell_{station}"):
+                        sell_machine(station)
+                        st.experimental_rerun()
+
+                    if not st.session_state.autopilot:
+                        st.session_state.desired_machines[station] = st.number_input(
+                            f"Desired {station}",
+                            min_value=0,
+                            max_value=20,
+                            value=st.session_state.desired_machines[station],
+                            key=f"desired_{station}",
+                        )
+
+            if not st.session_state.autopilot:
+                if st.button("Apply Machine Changes"):
+                    apply_machine_changes()
+                    st.experimental_rerun()
+            else:
+                st.info("Autopilot is active. Machine decisions are locked.")
+
+            st.markdown("### Pricing & Marketing")
+            if not st.session_state.autopilot:
+                st.session_state.price = st.slider(
+                    "Price per bottle ($)", 10.0, 40.0, st.session_state.price, 0.5
+                )
+                st.session_state.marketing_tier = st.slider(
+                    "Marketing Tier (1–6)", 1, 6, st.session_state.marketing_tier
+                )
+            else:
+                st.write(f"Price: ${st.session_state.price:.2f}")
+                st.write(f"Marketing Tier: {st.session_state.marketing_tier}")
+
+            st.markdown("### Simulation Controls")
+            cauto, cstep = st.columns(2)
+            with cauto:
+                st.session_state.autoplay = st.checkbox(
+                    "Autoplay (1 day/step)", value=st.session_state.autoplay
+                )
+            with cstep:
+                if st.button("Advance 1 Day"):
                     simulate_one_day()
+                    st.experimental_rerun()
 
-        render_history()
+            st.markdown("### Status")
+            s1, s2, s3, s4 = st.columns(4)
+            s1.write(f"Viral: {'Yes' if st.session_state.viral_triggered else 'No'}")
+            s2.write(f"Crisis: {'Yes' if st.session_state.crisis_triggered else 'No'}")
+            s3.write(f"Autopilot: {'Yes' if st.session_state.autopilot else 'No'}")
+            s4.write(f"Day #: {st.session_state.day_counter}")
 
-    with col_right:
-        render_events_panel()
+            st.markdown("### Recent Events")
+            if st.session_state.recent_events:
+                for e in st.session_state.recent_events:
+                    st.write(f"- {e}")
+            else:
+                st.write("No major events yet.")
 
-    if st.session_state.current_date > END_DATE:
-        st.success("Simulation complete. You’ve reached the end of the year.")
+        with right:
+            st.markdown("### Quick Info")
+            st.write("**Daily Capacity**")
+            st.write(f"{daily_capacity()} units/day")
+            st.write("**Cash**")
+            st.write(f"${st.session_state.cash:,.0f}")
+            st.write("**Marketing Multiplier**")
+            st.write(f"{marketing_multiplier(st.session_state.current_date):.2f}")
+            st.write("**Price Multiplier**")
+            st.write(f"{price_multiplier(st.session_state.price):.2f}")
+            st.write("**Seasonal Multiplier**")
+            st.write(f"{seasonal_multiplier(st.session_state.current_date):.2f}")
+            st.write("**Event Multiplier**")
+            st.write(f"{event_multiplier(st.session_state.current_date):.2f}")
 
+    with tab_analytics:
+        st.subheader("Analytics")
+        st.write("Charts coming soon.")
+
+    if st.session_state.autoplay and not (
+        st.session_state.show_celeb_popup
+        or st.session_state.show_viral_popup
+        or st.session_state.show_crisis_popup
+        or st.session_state.show_oversaturation_popup
+    ):
+        if st.session_state.current_date <= END_DATE:
+            simulate_one_day()
+            st.experimental_rerun()
+        else:
+            st.session_state.autoplay = False
+
+# =========================
+# ENTRY POINT
+# =========================
 
 if __name__ == "__main__":
     main()
